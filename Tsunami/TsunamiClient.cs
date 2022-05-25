@@ -73,7 +73,7 @@ namespace Tsunami.Client
         }
         public void GetFile(string filename, int port, int chunkSize)
         {
-            if (!tcpClient.Connected)
+            if (!tcpClient?.Connected != false)
             {
                 logger.LogInfo("Not connected!");
                 return;
@@ -105,12 +105,11 @@ namespace Tsunami.Client
             writing.Start();
 
             writing.Join();
-            //while (!writingFinished) { }//??
 
             logger.LogSuccess($"File downloaded.");
             logger.LogSuccess($"Download time: {downloadSW.Elapsed:G}");
             logger.LogSuccess($"Write time: {writeSW.Elapsed:G}");
-            logger.LogSuccess($"File size: {fileLength} bytes ({Math.Round(fileLength / 1000.0, 2):# ### ###} kB)");
+            logger.LogSuccess($"File size: {fileLength} bytes ({Math.Round(fileLength / 1024.0, 2):# ### ###} kB)");
         }
         void Receiver(int fileLength, int chunkSize, Stopwatch stopwatch, int port)
         {
@@ -185,7 +184,7 @@ namespace Tsunami.Client
                     {
                         logger.LogInfo($"Writing chunk {chunk.chunkIndex + 1}");
                         fileStream.Position = chunk.chunkIndex * chunkSize;
-                        var data = chunk.data.TakeWhile(b => b != 0).ToArray();//pomijam naddatek w przypadku pustych danych w chunku
+                        var data = chunk.data.ToArray();
                         fileStream.Write(data, 0, data.Length);
                     }
                 }

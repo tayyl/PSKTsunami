@@ -17,7 +17,7 @@ namespace Server
         private TcpClient tcpClient;
         private UdpClient udpClient;
         private ConcurrentQueue<int> RetransmissionQueue;
-        private ConcurrentQueue<(int chunkIndex, byte[] data)> ChunksQueue;
+        private ConcurrentQueue<(int chunkIndex, byte[] data, int chunkSize)> ChunksQueue;
         private bool sendingCompleted;
 
         public TsunamiServer(ILogger logger)
@@ -133,7 +133,7 @@ namespace Server
                 WriteLine($"Could not parse {clientPort} to integer");
                 return;
             }
-            ChunksQueue = new ConcurrentQueue<(int chunkIndex, byte[] data)>();
+            ChunksQueue = new ConcurrentQueue<(int chunkIndex, byte[] data, int chunkSize)>();
             try
             {
                 logger.LogSuccess($"Received request for file {filename} from {tcpClient.Client.RemoteEndPoint}");
@@ -183,10 +183,10 @@ namespace Server
                     var data = new byte[Consts.HeaderOffset + chunkSize];
                     var indexHeader = BitConverter.GetBytes(chunkNumber);
                     indexHeader.CopyTo(data, 0);
-
+                    var dataToRead = (int)Math.Min(chunkSize, fileStream.Length - fileStream.Position);
                     fileStream.Position = chunkNumber * chunkSize;
-                    fileStream.Read(data, Consts.HeaderOffset, chunkSize);
-                    ChunksQueue.Enqueue((chunkNumber, data));
+                    fileStream.Read(data, Consts.HeaderOffset, dataToRead);
+                    ChunksQueue.Enqueue((chunkNumber, data, dataToRead));
                 }
             }
         }
@@ -201,7 +201,7 @@ namespace Server
                 }
 
                 logger.LogInfo($"Sending chunk {fileChunk.chunkIndex+1}/{chunksAmount}");
-                udpClient.Send(fileChunk.data, Consts.HeaderOffset + chunkSize);
+                udpClient.Send(fileChunk.data, Consts.HeaderOffset + fileChunk.chunkSize);
             }
         }
         void AddChunkToRetransmissionQueue(string chunkNumber)
