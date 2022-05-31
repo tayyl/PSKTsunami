@@ -19,6 +19,8 @@ namespace Tsunami.Client
         private bool downloadFinished;
         private bool writingFinished;
         private ConcurrentQueue<(int chunkIndex, byte[] data)> ChunksQueue;
+
+        private ConcurrentDictionary<int, bool> receivedChunks;
         public TsunamiClient(ILogger logger)
         {
             this.logger = logger;
@@ -94,66 +96,75 @@ namespace Tsunami.Client
 
             downloadFinished = false;
             writingFinished = false;
+            var chunksAmount = Math.Ceiling(fileLength / (decimal)chunkSize);
+            receivedChunks = new ConcurrentDictionary<int, bool>(Enumerable.Range(0, (int)chunksAmount).Select(x => new KeyValuePair<int, bool>(x, false)));
             var downloadSW = new Stopwatch();
             var writeSW = new Stopwatch();
             downloadSW.Start();
             writeSW.Start();
 
+            var tcpReceiver = new Thread(() => TcpReceiver());
             var download = new Thread(() => Receiver(fileLength, chunkSize, downloadSW, port));
             var writing = new Thread(() => Writer(filename, chunkSize, writeSW));
             download.Start();
             writing.Start();
-
+            tcpReceiver.Start();
             writing.Join();
 
             logger.LogSuccess($"File downloaded.");
             logger.LogSuccess($"Download time: {downloadSW.Elapsed:G}");
             logger.LogSuccess($"Write time: {writeSW.Elapsed:G}");
             logger.LogSuccess($"File size: {fileLength} bytes ({Math.Round(fileLength / 1024.0, 2):# ### ###} kB)");
+            Disconnect();
+        }
+        void TcpReceiver()
+        {
+            while (!downloadFinished)
+            {
+                var commandFromServer = ReadLine();
+                switch (commandFromServer.TrimEnd('\n'))
+                {
+                    case "finished-sending":
+                        //jezeli serwer skonczyl i nie ma juz dostepnych danych do odbioru to ponawiam
+
+                            for (var i = 0; i < receivedChunks.Count; i++)
+                            {
+                                //przesylam zapytanie o brakujace chunki
+                                if (receivedChunks[i] == false)
+                                {
+                                    logger.LogInfo($"Requesting retransmission of chunk {i + 1}");
+                                    WriteLine($"retransmit {i}");
+                                }
+                            }
+
+                        break;
+                }
+            }
         }
         void Receiver(int fileLength, int chunkSize, Stopwatch stopwatch, int port)
         {
             var chunksAmount = Math.Ceiling(fileLength / (decimal)chunkSize);
-            var receivedChunks = new byte[(int)chunksAmount];
 
             try
             {
                 //jeżeli nie otrzymaliśmy jeszcze wszystkich
-                while (receivedChunks.Contains((byte)0))
+                while (receivedChunks.Any(x => x.Value == false))
                 {
-                    //jezeli nie ma zadnego dostepnego datagramu do odebrania
-                    if (udpClient.Client.Available == 0)
+                    var iPEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, port);
+                    var datagram = udpClient.Receive(ref iPEndPoint);
+                    var chunkNumber = BitConverter.ToInt32(datagram[..Consts.HeaderOffset]);
+                    logger.LogInfo($"Downloaded chunk {chunkNumber + 1}/{chunksAmount}");
+
+                    //jezeli mialem go juz wczesniej to pomijam
+                    if (receivedChunks[chunkNumber])
                     {
-                        for (var i = 0; i < receivedChunks.Length; i++)
-                        {
-                            //przesylam zapytanie o brakujace chunki
-                            if (receivedChunks[i] == 0)
-                            {
-                                logger.LogInfo($"Requesting retransmission of chunk {i + 1}");
-                                WriteLine($"retransmit {i}");
-                            }
-                        }
-
+                        continue;
                     }
-                    else
-                    {
 
-                        var iPEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, port);
-                        var datagram = udpClient.Receive(ref iPEndPoint);
-                        var chunkNumber = BitConverter.ToInt32(datagram[..Consts.HeaderOffset]);
-                        logger.LogInfo($"Downloaded chunk {chunkNumber + 1}/{chunksAmount}");
+                    ChunksQueue.Enqueue((chunkIndex: chunkNumber, data: datagram[Consts.HeaderOffset..]));
 
-                        //jezeli mialem go juz wczesniej to pomijam
-                        if (receivedChunks[chunkNumber] == 1)
-                        {
-                            continue;
-                        }
+                    receivedChunks[chunkNumber] = true;
 
-                        ChunksQueue.Enqueue((chunkIndex: chunkNumber, data: datagram[Consts.HeaderOffset..]));
-
-                        receivedChunks[chunkNumber] = 1;
-
-                    }
                 }
                 downloadFinished = true;
                 WriteLine("done");

@@ -106,7 +106,9 @@ namespace Server
                     default: WriteLine("Invalid command"); break;
                 }
             }
+            WriteLine("done");
             sendingCompleted = true;
+
             logger.LogInfo("Finished receiving");
         }
         void SendFile(string command)
@@ -146,17 +148,14 @@ namespace Server
                 udpClient = new UdpClient();
                 var clientEndpoint = tcpClient.Client.RemoteEndPoint as IPEndPoint;
                 udpClient.Connect(clientEndpoint.Address, clientPortInt);
-
+                sendingCompleted = false;
                 logger.LogInfo($"Reading file: {filename} with size of {fileInfo.Length} bytes");
                 RetransmissionQueue = new ConcurrentQueue<int>(Enumerable.Range(0, (int)chunkCount));
                 var reader = new Thread(() => ReadFileChunks(filename, chunkSizeInt));
                 var sender = new Thread(() => SendFileChunks((int)chunkCount, chunkSizeInt));
                 reader.Start();
                 sender.Start();
-
-                //while (!sendingCompleted) { } //??
-
-                sender.Join();
+                while (!sendingCompleted) { }
                 logger.LogSuccess($"File {filename} send to client {tcpClient.Client.RemoteEndPoint}");
             }
             catch (Exception e)
@@ -202,6 +201,11 @@ namespace Server
 
                 logger.LogInfo($"Sending chunk {fileChunk.chunkIndex+1}/{chunksAmount}");
                 udpClient.Send(fileChunk.data, Consts.HeaderOffset + fileChunk.chunkSize);
+                if (RetransmissionQueue.IsEmpty && ChunksQueue.IsEmpty)
+                {
+                    logger.LogInfo("Finished sending all chunks - informing client..");
+                    WriteLine("finished-sending");
+                }
             }
         }
         void AddChunkToRetransmissionQueue(string chunkNumber)
@@ -211,6 +215,7 @@ namespace Server
                 WriteLine($"Invalid request. Could not parse {chunkNumber}");
                 return;
             }
+            logger.LogInfo($"Requested for retransmition of chunk {chunk+1}");
             if (!RetransmissionQueue.Contains(chunk))
             {
                 RetransmissionQueue.Enqueue(chunk);
