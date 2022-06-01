@@ -89,7 +89,7 @@ namespace Server
         void Receive()
         {
             var response = "";
-            while ((response = ReadLine()) != "done\n")
+            while ((response = ReadLine()?.TrimEnd('\n')) != "done")
             {
                 var commands = response.Split(' ');
                 var action = commands.ElementAtOrDefault(0);
@@ -103,6 +103,9 @@ namespace Server
                     case "retransmit":
                         AddChunkToRetransmissionQueue(argument);
                         break;
+                    case "file-info":
+                        SendFileInfo(argument);
+                        break;
                     default: WriteLine("Invalid command"); break;
                 }
             }
@@ -110,6 +113,31 @@ namespace Server
             sendingCompleted = true;
 
             logger.LogInfo("Finished receiving");
+        }
+        void SendFileInfo(string command)
+        {
+            var commands = command.Split(' ');
+            var filename = commands.ElementAtOrDefault(0);
+            var filePath = Path.Combine(Consts.ServerFilesPath, filename);
+            if (string.IsNullOrEmpty(filename) || !File.Exists(filePath))
+            {
+                WriteLine($"No file with name {filename} found on server.");
+                return;
+            }
+
+            try
+            {
+                logger.LogSuccess($"Received request for file info {filename} from {tcpClient.Client.RemoteEndPoint}");
+
+                var fileInfo = new FileInfo(filePath);
+
+                WriteLine(fileInfo.Length.ToString());
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogError($"Failed to send file info {filename}. Exception: {ex.Message}");
+            }
         }
         void SendFile(string command)
         {
@@ -142,8 +170,6 @@ namespace Server
 
                 var fileInfo = new FileInfo(filePath);
                 var chunkCount = Math.Ceiling(fileInfo.Length / (decimal)chunkSizeInt);
-
-                 WriteLine(fileInfo.Length.ToString());
 
                 udpClient = new UdpClient();
                 var clientEndpoint = tcpClient.Client.RemoteEndPoint as IPEndPoint;
@@ -182,10 +208,11 @@ namespace Server
                     var data = new byte[Consts.HeaderOffset + chunkSize];
                     var indexHeader = BitConverter.GetBytes(chunkNumber);
                     indexHeader.CopyTo(data, 0);
-                    var dataToRead = (int)Math.Min(chunkSize, fileStream.Length - fileStream.Position);
+
                     fileStream.Position = chunkNumber * chunkSize;
-                    fileStream.Read(data, Consts.HeaderOffset, dataToRead);
-                    ChunksQueue.Enqueue((chunkNumber, data, dataToRead));
+                    var dataToRead = (fileStream.Position + chunkSize) > fileStream.Length ? fileStream.Length - fileStream.Position : chunkSize;
+                    fileStream.Read(data, Consts.HeaderOffset,(int)dataToRead);
+                    ChunksQueue.Enqueue((chunkNumber, data, (int)dataToRead));
                 }
             }
         }
@@ -199,7 +226,7 @@ namespace Server
                     continue;
                 }
 
-                logger.LogInfo($"Sending chunk {fileChunk.chunkIndex+1}/{chunksAmount}");
+                logger.LogInfo($"Sending chunk {fileChunk.chunkIndex + 1}/{chunksAmount}");
                 udpClient.Send(fileChunk.data, Consts.HeaderOffset + fileChunk.chunkSize);
                 if (RetransmissionQueue.IsEmpty && ChunksQueue.IsEmpty)
                 {
@@ -215,7 +242,7 @@ namespace Server
                 WriteLine($"Invalid request. Could not parse {chunkNumber}");
                 return;
             }
-            logger.LogInfo($"Requested for retransmition of chunk {chunk+1}");
+            logger.LogInfo($"Requested for retransmition of chunk {chunk + 1}");
             if (!RetransmissionQueue.Contains(chunk))
             {
                 RetransmissionQueue.Enqueue(chunk);

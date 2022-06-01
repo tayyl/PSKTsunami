@@ -19,8 +19,10 @@ namespace Tsunami.Client
         private bool downloadFinished;
         private bool writingFinished;
         private ConcurrentQueue<(int chunkIndex, byte[] data)> ChunksQueue;
-
         private ConcurrentDictionary<int, bool> receivedChunks;
+
+        object _lock;
+        bool isDataAvailable;
         public TsunamiClient(ILogger logger)
         {
             this.logger = logger;
@@ -82,7 +84,7 @@ namespace Tsunami.Client
             }
 
             udpClient = new UdpClient(port);
-            WriteLine($"get {filename} {port} {chunkSize}");
+            WriteLine($"file-info {filename}");
 
             var fileRes = ReadLine();
 
@@ -100,15 +102,20 @@ namespace Tsunami.Client
             receivedChunks = new ConcurrentDictionary<int, bool>(Enumerable.Range(0, (int)chunksAmount).Select(x => new KeyValuePair<int, bool>(x, false)));
             var downloadSW = new Stopwatch();
             var writeSW = new Stopwatch();
+
+            var tcpReceiver = new Thread(() => TcpReceiver());
+            var download = new Thread(() => FileReceiver(fileLength, chunkSize, downloadSW, port));
+            var writing = new Thread(() => Writer(filename, chunkSize, writeSW));
+
+            WriteLine($"get {filename} {port} {chunkSize}");
+
             downloadSW.Start();
             writeSW.Start();
 
-            var tcpReceiver = new Thread(() => TcpReceiver());
-            var download = new Thread(() => Receiver(fileLength, chunkSize, downloadSW, port));
-            var writing = new Thread(() => Writer(filename, chunkSize, writeSW));
             download.Start();
             writing.Start();
             tcpReceiver.Start();
+
             writing.Join();
 
             logger.LogSuccess($"File downloaded.");
@@ -126,33 +133,39 @@ namespace Tsunami.Client
                 {
                     case "finished-sending":
                         //jezeli serwer skonczyl i nie ma juz dostepnych danych do odbioru to ponawiam
-
-                            for (var i = 0; i < receivedChunks.Count; i++)
+                        Monitor.Wait(_lock);
+                        for (var i = 0; i < receivedChunks.Count; i++)
+                        {
+                            //przesylam zapytanie o brakujace chunki
+                            if (receivedChunks[i] == false)
                             {
-                                //przesylam zapytanie o brakujace chunki
-                                if (receivedChunks[i] == false)
-                                {
-                                    logger.LogInfo($"Requesting retransmission of chunk {i + 1}");
-                                    WriteLine($"retransmit {i}");
-                                }
+                                logger.LogInfo($"Requesting retransmission of chunk {i + 1}");
+                                WriteLine($"retransmit {i}");
                             }
+                        }
 
                         break;
                 }
             }
         }
-        void Receiver(int fileLength, int chunkSize, Stopwatch stopwatch, int port)
+        void FileReceiver(int fileLength, int chunkSize, Stopwatch stopwatch, int port)
         {
             var chunksAmount = Math.Ceiling(fileLength / (decimal)chunkSize);
-
             try
             {
                 //jeżeli nie otrzymaliśmy jeszcze wszystkich
                 while (receivedChunks.Any(x => x.Value == false))
                 {
                     var iPEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, port);
+                    isDataAvailable = udpClient.Available != 0;
+
+                    if (!isDataAvailable)
+                    {
+                        Monitor.Pulse(_lock);
+                    }
+
                     var datagram = udpClient.Receive(ref iPEndPoint);
-                    var chunkNumber = BitConverter.ToInt32(datagram[..Consts.HeaderOffset]);
+                    var chunkNumber = BitConverter.ToInt32(datagram.AsSpan()[..Consts.HeaderOffset]);
                     logger.LogInfo($"Downloaded chunk {chunkNumber + 1}/{chunksAmount}");
 
                     //jezeli mialem go juz wczesniej to pomijam
