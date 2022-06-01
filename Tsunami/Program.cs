@@ -21,6 +21,7 @@ namespace Tsunami
                 switch (action)
                 {
                     case "connect":
+                        tsunamiClient = new TsunamiClient(logger);
                         tsunamiClient.Connect(Consts.HostAddress, Consts.TcpPort);
                         break;
 

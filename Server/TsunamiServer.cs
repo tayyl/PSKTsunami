@@ -101,12 +101,11 @@ namespace Server
                         sender.Start();
                         break;
                     case "retransmit":
-                        AddChunkToRetransmissionQueue(argument);
+                        AddChunksToRetransmissionQueue(argument);
                         break;
                     case "file-info":
                         SendFileInfo(argument);
                         break;
-                    default: WriteLine("Invalid command"); break;
                 }
             }
             WriteLine("done");
@@ -181,7 +180,9 @@ namespace Server
                 var sender = new Thread(() => SendFileChunks((int)chunkCount, chunkSizeInt));
                 reader.Start();
                 sender.Start();
-                while (!sendingCompleted) { }
+
+                reader.Join();
+
                 logger.LogSuccess($"File {filename} send to client {tcpClient.Client.RemoteEndPoint}");
             }
             catch (Exception e)
@@ -211,7 +212,7 @@ namespace Server
 
                     fileStream.Position = chunkNumber * chunkSize;
                     var dataToRead = (fileStream.Position + chunkSize) > fileStream.Length ? fileStream.Length - fileStream.Position : chunkSize;
-                    fileStream.Read(data, Consts.HeaderOffset,(int)dataToRead);
+                    fileStream.Read(data, Consts.HeaderOffset, (int)dataToRead);
                     ChunksQueue.Enqueue((chunkNumber, data, (int)dataToRead));
                 }
             }
@@ -235,18 +236,20 @@ namespace Server
                 }
             }
         }
-        void AddChunkToRetransmissionQueue(string chunkNumber)
+        void AddChunksToRetransmissionQueue(string chunks)
         {
-            if (!int.TryParse(chunkNumber, out var chunk))
+            var chunksSplitted = chunks.Trim().TrimEnd().Split(' ');
+
+            logger.LogInfo($"Requested for retransmition of chunks {chunks}");
+            foreach (var chunk in chunksSplitted)
             {
-                WriteLine($"Invalid request. Could not parse {chunkNumber}");
-                return;
+
+                if (int.TryParse(chunk, out var chunkAsInt))
+                {
+                    RetransmissionQueue.Enqueue(chunkAsInt);
+                }
             }
-            logger.LogInfo($"Requested for retransmition of chunk {chunk + 1}");
-            if (!RetransmissionQueue.Contains(chunk))
-            {
-                RetransmissionQueue.Enqueue(chunk);
-            }
+
         }
     }
 }
