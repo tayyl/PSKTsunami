@@ -17,12 +17,11 @@ namespace Tsunami.Client
         private TcpClient tcpClient;
         private UdpClient udpClient;
         private bool downloadFinished;
-        private bool writingFinished;
+        private bool serverFinished;
         private ConcurrentQueue<(int chunkIndex, byte[] data)> ChunksQueue;
         private ConcurrentDictionary<int, bool> receivedChunks;
 
-        object _lock = new object();
-        bool isDataAvailable;
+        object _lock = new();
         public TsunamiClient(ILogger logger)
         {
             this.logger = logger;
@@ -84,7 +83,7 @@ namespace Tsunami.Client
 
             udpClient = new UdpClient(port);
             WriteLine($"file-info {filename}");
-            udpClient.Client.ReceiveTimeout = 100; //?? potencjalne rozwiazanie problemu utkniecia
+            udpClient.Client.ReceiveTimeout = 100; 
             var fileRes = ReadLine();
 
             if (!int.TryParse(fileRes, out var fileLength))
@@ -96,7 +95,6 @@ namespace Tsunami.Client
             logger.LogInfo($"Downloading file: {filename} with size {fileLength} bytes");
 
             downloadFinished = false;
-            writingFinished = false;
             var chunksAmount = Math.Ceiling(fileLength / (decimal)chunkSize);
             receivedChunks = new ConcurrentDictionary<int, bool>(Enumerable.Range(0, (int)chunksAmount).Select(x => new KeyValuePair<int, bool>(x, false)));
             ChunksQueue = new ConcurrentQueue<(int chunkIndex, byte[] data)>();
@@ -134,12 +132,14 @@ namespace Tsunami.Client
                 var commandFromServer = ReadLine();
                 switch (commandFromServer.TrimEnd('\n'))
                 {
-                    //moze byc tez taka sytuacja ze serwer skonczyl, poinformuje ze skonczyl
                     case "finished-sending":
-                        Monitor.Enter(_lock);
-                        //??nie ma gwarancji, ze wątek FileReceiver wyśle 'Pulse', że mu czegos brakuje, kiedy serwer już nadał, że skończył
-                        Monitor.Wait(_lock);
-
+                        lock (_lock)
+                        {
+                            if (!serverFinished)
+                            {
+                                Monitor.Wait(_lock);
+                            }
+                        }
                         //jezeli serwer skonczyl i nie ma juz dostepnych danych do odbioru to ponawiam
                         var chunks = "";
                         for (var i = 0; i < receivedChunks.Count; i++)
@@ -155,6 +155,7 @@ namespace Tsunami.Client
                             logger.LogInfo($"Requesting retransmission of chunks {chunks}");
                             WriteLine($"retransmit {chunks}");
                         }
+    
                         break;
                 }
             }
@@ -168,25 +169,17 @@ namespace Tsunami.Client
                 while (receivedChunks.Any(x => x.Value == false))
                 {
                     var iPEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, port);
-                    //??problem
-                    //sprawdza ze niczego nie ma do odebrania
-                    //wysyla pulse i czeka na kliencie udp
-                    //klient czeka w receive i w tym momencie serwer wysyla informacje ze skonczyl
-                    //watek od retransmisji czeka bo watek informujacy o brakujacych czeka w receive
-                    if (!Monitor.IsEntered(_lock))
+            
+                    lock (_lock)
                     {
-                        Monitor.Enter(_lock);
-                    }
-                    //??w tej chwilii nic nie ma, ale nie oznacza to, ze serwer skonczyl nadawac
-                    if (udpClient.Available == 0)
-                    {
-                        Monitor.Pulse(_lock);
-                        Monitor.Exit(_lock);
+                        serverFinished = udpClient.Available == 0;
+                        if (serverFinished)
+                        {
+                            Monitor.Pulse(_lock);
+                        }
                     }
                     try
                     {
-                        //od momentu wejscia do ifa powyzej do dojscia tutaj, jakies dane mogly sie pojawic
-                        //rowniez w tym okresie mogla dojsc informacja ze serwer skonczyl - wtedy utykam
                         var datagram = udpClient.Receive(ref iPEndPoint);
                         var chunkNumber = BitConverter.ToInt32(datagram.AsSpan()[..Consts.HeaderOffset]);
                         logger.LogInfo($"Downloaded chunk {chunkNumber + 1}/{chunksAmount}");
@@ -217,10 +210,10 @@ namespace Tsunami.Client
             }
             finally
             {
-                if (Monitor.IsEntered(_lock))
-                {
-                    Monitor.Exit(_lock);
-                }
+                //if (Monitor.IsEntered(_lock))
+                //{
+                //    Monitor.Exit(_lock);
+                //}
                 udpClient.Close();
                 udpClient.Dispose();
             }
@@ -247,7 +240,6 @@ namespace Tsunami.Client
             }
 
             stopwatch.Stop();
-            writingFinished = true;
         }
     }
 }
